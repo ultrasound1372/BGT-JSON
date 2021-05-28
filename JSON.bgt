@@ -1,0 +1,794 @@
+/* MIT License
+Copyright 2021 Colton Hill
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without 
+restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the 
+Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND 
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+/* JSON
+A fully featured JSON module in BGT.
+This module defines a namespace JSON. To interact with items inside that namespace, namely all the parser functions and the value synthesis functions, prefix the function name with JSON::
+If you wish for simple parsing without the object tree overhead, for JSON you know will never deviate from a given spec, you may use the parsing functions defined in this namespace directly. These functions expect to be passed a string and a cursor, this cursor is used to keep track of the position while parsing, since these functions will call other functions. Some functions will require you provide the cursor value a second time as &out so that it may mutate your cursor value.
+For full featured interaction with an object tree, you may use the JSON::loads and JSON::dumps functions. These functions make use of several objects that derive from json_value, defined outside the namespace, to store their data.
+When getting a value from an object, array or json_value derivative, you must first check the type against the enumeration, then construct an appropriate intermediate value, and finally call the appropriate get function and pass your intermediate value as a parameter, as you do to retrieve values from a dictionary. This is necessary so that the signatures may differ enough so that a json_value instance can hold any type.
+When you get an array as a value, the expected return type is json_value@[]@. This means that you will be given internal access to the array of values, but you will still have to do type checking on the elements, since JSON arrays can hold any combination of types.
+It is highly advised not to include null in your code. This parser, while technically being able to handle null, might cause unexpected errors if you aren't careful when nulls are involved, and I cann't guarantee that the parser itself is free from possible errors when null is involved.
+When retrieving an instance of json_object from an array, you must manually cast the resulting handle before you can use object methods. This can be done as cast<json_object@>(a[i]);
+The raw parser functions and the value type system make use of an enumeration defined outside the namespace to indicate the types. If at any place you encounter JSON_INVALID, something is malformed about the data and it is unable to be handled properly. If you call loads on malformed data, you will receive the null handle.
+*/
+// the enumeration of types. The explicit values JSON_TRUE and JSON_FALSE are there for the raw parser functions.
+enum JSON_VALUE_CLASS {
+JSON_NUMBER,
+JSON_STRING,
+JSON_ARRAY,
+JSON_OBJECT,
+JSON_FALSE,
+JSON_TRUE,
+JSON_NULL,
+JSON_INVALID,
+JSON_BOOL // for the JSON objects, not the classify function
+}
+namespace JSON
+{
+// common internal utility functions for the JSON parser/generator.
+// string constants to make things faster.
+const string quote="\"", comma=",", colon=":", backslash="\\", equote=backslash+quote, lbrace="{", rbrace="}", lbracket="[", rbracket="]";
+/* skips whitespace in a JSON string.
+Given a JSON string and an existing cursor position, returns the new cursor position after ignoring any whitespace. This function is necessary to call for the parser to work correctly when whitespace in the strings is involved.
+Run this when expecting structural characters, such as brackets, braces, quotes, colons and commas.
+*/
+uint skip_whitespace(const string &in json, uint cursor)
+{
+while(cursor<json.length())
+{
+if(json[cursor]==" " or json[cursor]=="\t" or json[cursor]=="\r" or json[cursor]=="\n") // whitespace defined in the JSON spec
+cursor++;
+else // something other than that, we've found the next character to be useful
+break;
+}
+return cursor; // either the last position in the string or the position of the next character of interest
+}
+bool string_is_json_number(const string &in str)
+{ // utility function to determine if a given string complies to a subset of the JSON number spec, though we don't support scientific notation.
+for(uint i=0; i<str.length(); i++)
+{
+if((str[i]>="0"&&str[i]<="9")||str[i]=="-"||str[i]=="+"||str[i]==".") continue; // I don't think string_to_number parses scientific notation
+else return false; // bad character
+}
+return true; // the loop completed without finding anything off
+}
+string make_string(const string &in str)
+{ // produces a usable string to be put in JSON, including the surrounding quotes, and with escapes applied
+string ret=str;
+ret=string_replace(ret,"\r","\\r",true);
+ret=string_replace(ret,"\n","\\n",true);
+ret=string_replace(ret,"\t","\\t",true);
+ret=string_replace(ret,quote,equote,true);
+return quote+ret+quote;
+}
+string get_string(const string &in json, uint startquote, uint endquote, uint &out cursor)
+{ // Returns a string contained within the quotes at positions startquote and endquote, handling some escapes as necessary.
+// Also returns the new cursor position from within the string, as &out.
+string ret=string_mid(json,startquote+2,endquote-startquote-1); // string_mid is being weird and not following the documentation at all, these offsets were observed impirically
+ret=string_replace(ret,"\\r","\r",true);
+ret=string_replace(ret,"\\n","\n",true);
+ret=string_replace(ret,"\\t","\t",true);
+ret=string_replace(ret,"\\/","/",true);
+ret=string_replace(ret,equote,quote,true);
+cursor=endquote+1;
+if(cursor>=json.length()) cursor=json.length(); // don't get an index out of bounds error here.
+return ret;
+}
+string get_string(const string &in json, uint startquote, uint &out cursor)
+{ // overloaded version to only need a start position and to automatically find the ending quote
+int endquote=-1;
+for(uint i=startquote+1; i<json.length(); i++)
+{
+if(json[i]==quote and json[i-1]!=backslash)
+{
+endquote=i;
+break;
+}
+else continue;
+}
+if(endquote==-1) return "";
+else return get_string(json,startquote,endquote,cursor);
+}
+int classify_value(const string &in json, uint startquote, string &out name, uint &out cursor)
+{ // Returns the enumerated classification for a JSON value when given the cursor position of the starting quote of the name.
+// Also returns the name itself and the new cursor position, positioned at the first character of the value, or if a literal, the character immediately after the end of said literal.
+name=get_string(json,startquote,cursor);
+if(cursor==json.length()-1 or name.is_empty())
+{
+return JSON_INVALID;
+}
+cursor=skip_whitespace(json,cursor);
+if(cursor==json.length()-1) return JSON_INVALID;
+if(json[cursor]!=colon)
+{
+return JSON_INVALID; // we're classifying a value, there should be a colon there
+}
+cursor++;
+cursor=skip_whitespace(json,cursor); // searching for the value now
+if(cursor==json.length()-1) return JSON_INVALID;
+if(json[cursor]==lbrace) return JSON_OBJECT;
+else if(json[cursor]==lbracket) return JSON_ARRAY;
+else if(json[cursor]==quote) return JSON_STRING;
+else if(string_is_json_number(json[cursor])) return JSON_NUMBER;
+string fourchar=string_mid(json,cursor+1,4), fivechar=string_mid(json,cursor+1,5);
+if(fourchar=="true")
+{
+cursor+=5;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_TRUE;
+}
+else if(fourchar=="null")
+{
+cursor+=5;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_NULL;
+}
+else if(fivechar=="false")
+{
+cursor+=6;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_FALSE;
+}
+else
+{
+return JSON_INVALID; // doesn't obey the spec
+}
+}
+int classify_nameless_value(const string &in json, uint incursor, uint &out cursor)
+{ // classify function to be used within arrays, where values don't have names
+cursor=incursor;
+cursor=skip_whitespace(json,cursor); // searching for the value now
+if(cursor==json.length()-1) return JSON_INVALID;
+if(json[cursor]==lbrace) return JSON_OBJECT;
+else if(json[cursor]==lbracket) return JSON_ARRAY;
+else if(json[cursor]==quote) return JSON_STRING;
+else if(string_is_json_number(json[cursor])) return JSON_NUMBER;
+string fourchar=string_mid(json,cursor+1,4), fivechar=string_mid(json,cursor+1,5);
+if(fourchar=="true")
+{
+cursor+=5;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_TRUE;
+}
+else if(fourchar=="null")
+{
+cursor+=5;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_NULL;
+}
+else if(fivechar=="false")
+{
+cursor+=6;
+if(cursor>=json.length()) cursor=json.length();
+return JSON_FALSE;
+}
+else
+{
+return JSON_INVALID; // doesn't obey the spec
+}
+}
+double get_number(string &in json, uint cur, uint &out cursor)
+{ // gets a number starting at the current cursor position.
+uint startpos=cur,endpos=cur;
+for(uint i=startpos; i<json.length(); i++)
+{
+if(!string_is_json_number(json[i])) break;
+else endpos=i;
+}
+double ret=string_to_number(string_mid(json,startpos+1,endpos-startpos+1));
+cursor=endpos+1;
+if(cursor>=json.length()) cursor=json.length();
+return ret;
+}
+/* value synthesis functions
+These overloaded functions allow you to synthesize a json_value object from a primative value easier by removing some of the boilerplate.
+This is useful when dealing with arrays, but can also be useful when dealing with objects. Used to construct your own tree.
+*/
+json_value@ make_value(string value)
+{
+json_string v(value);
+return v;
+}
+json_value@ make_value(double value)
+{
+json_number v(value);
+return v;
+}
+json_value@ make_value(bool value)
+{
+json_bool v(value);
+return v;
+}
+json_value@ make_value(json_value@[] value)
+{
+json_array v(value);
+return v;
+}
+// there is no value synthesis function for a json_object instance because json_object is already an instance of json_value.
+/* loads
+Given a JSON string, constructs a complete object tree that represents it and returns it, or returns null if input is invalid.
+Whitespace is handled within this function, so it is not necessary to purify your strings before passing them to this function.
+Furthermore, it is not necessary for the root object to be enclosed in braces, per the spec. This function will return a json_object even if the root is not inclosed in such braces.
+*/
+json_object@ loads(const string &in json)
+{
+json_object j();
+int cursor=skip_whitespace(json,0);
+cursor=load_json(json,cursor,j);
+if(cursor==-1) return null; // ran into some invalid shit
+else return j;
+}
+// recursive functions for parsing JSON into an object tree. Should not be used manually.
+int load_json(const string &in json, int cursor, json_object@ o)
+{
+if(json[cursor]==lbrace) cursor++;
+while(cursor<json.length())
+{
+if(cursor==-1) return -1; // have to check here because of recursion. A -1 will propagate and knock down the whole parsing stack and return -1 to the parse function.
+cursor=skip_whitespace(json,cursor);
+if(json[cursor]==rbrace)
+{
+cursor++;
+break;
+}
+string name;
+int vclass=classify_value(json,cursor,name,cursor);
+if(vclass==JSON_INVALID) return -1;
+else if(vclass==JSON_STRING)
+{
+json_string v(get_string(json,cursor,cursor));
+o.set(name,v);
+}
+else if(vclass==JSON_NUMBER)
+{
+json_number v(get_number(json,cursor,cursor));
+o.set(name,v);
+}
+else if(vclass==JSON_FALSE or vclass==JSON_TRUE)
+{
+bool value=(vclass==JSON_TRUE ? true : false);
+json_bool v(value);
+o.set(name,v);
+}
+else if(vclass==JSON_NULL)
+{
+o.set(name,null);
+}
+else if(vclass==JSON_OBJECT)
+{
+json_object o1;
+cursor=load_json(json,cursor,o1);
+o.set(name,o1);
+}
+else if(vclass==JSON_ARRAY)
+{
+json_array a;
+cursor=load_json_array(json,cursor,a);
+o.set(name,a);
+}
+cursor=skip_whitespace(json,cursor);
+if(cursor<json.length()&&json[cursor]==",") cursor++;
+}
+return cursor;
+}
+int load_json_array(const string &in json, int cursor, json_array@ a)
+{
+if(json[cursor]==lbracket) cursor++;
+while(cursor<json.length())
+{
+if(cursor==-1) return -1; // have to check here because of recursion. A -1 will propagate and knock down the whole parsing stack and return -1 to the parse function.
+if(json[cursor]==rbracket)
+{
+cursor++;
+break;
+}
+int vclass=classify_nameless_value(json,cursor,cursor);
+if(vclass==JSON_INVALID) return -1;
+else if(vclass==JSON_STRING)
+{
+json_string v(get_string(json,cursor,cursor));
+a.insert(v);
+}
+else if(vclass==JSON_NUMBER)
+{
+json_number v(get_number(json,cursor,cursor));
+a.insert(v);
+}
+else if(vclass==JSON_FALSE or vclass==JSON_TRUE)
+{
+bool value=(vclass==JSON_TRUE ? true : false);
+json_bool v(value);
+a.insert(v);
+}
+else if(vclass==JSON_NULL)
+{
+a.insert(null);
+}
+else if(vclass==JSON_OBJECT)
+{
+json_object o1;
+cursor=load_json(json,cursor,o1);
+a.insert(o1);
+}
+else if(vclass==JSON_ARRAY)
+{
+json_array a1;
+cursor=load_json_array(json,cursor,a1);
+a.insert(a1);
+}
+cursor=skip_whitespace(json,cursor);
+if(cursor<json.length()&&json[cursor]==",") cursor++;
+}
+return cursor;
+}
+/* dumps
+Dumps an object tree rooted at the given object to a JSON string. This object will always be enclosed in braces.
+The optional parameter whitespace can be set to true to produce whitespace in the string for more human readable output.
+*/
+string dumps(json_object o, bool whitespace=false)
+{
+string output="{";
+string[] members=o.get_members();
+for(uint i=0; i<members.length; i++)
+{
+if(members[i].is_empty()) continue;
+int type=o.type(members[i]);
+output+=make_string(members[i])+(whitespace ? ": " : ":");
+if(type==JSON_NULL) output+="null";
+else if(type==JSON_STRING)
+{
+string v;
+o.get(members[i],v);
+output+=make_string(v);
+}
+else if(type==JSON_NUMBER)
+{
+double v;
+o.get(members[i],v);
+output+=v;
+}
+else if(type==JSON_BOOL)
+{
+bool v;
+o.get(members[i],v);
+output+=(v ? "true" : "false");
+}
+else if(type==JSON_ARRAY)
+{
+json_value@[]@ a;
+o.get(members[i],a);
+output+=dump_array(a,whitespace);
+}
+else if(type==JSON_OBJECT)
+{
+json_object o1=o.get_obj(members[i]);
+output+=dumps(o1,whitespace);
+}
+if(i<(members.length-1)) output+=(whitespace ? ", " : ",");
+}
+output+="}";
+return output;
+}
+string dump_array(json_value@[]@ a, bool whitespace=false)
+{
+string output="[";
+for(uint i=0; i<a.length; i++)
+{
+int type=a[i].type;
+if(type==JSON_NULL) output+="null";
+else if(type==JSON_STRING)
+{
+string v;
+a[i].get(v);
+output+=make_string(v);
+}
+else if(type==JSON_NUMBER)
+{
+double v;
+a[i].get(v);
+output+=v;
+}
+else if(type==JSON_BOOL)
+{
+bool v;
+a[i].get(v);
+output+=(v ? "true" : "false");
+}
+else if(type==JSON_ARRAY)
+{
+json_value@[]@ a1;
+a[i].get(a1);
+output+=dump_array(a1,whitespace);
+}
+else if(type==JSON_OBJECT)
+{
+json_object o1=cast<json_object>(a[i]);
+output+=dumps(o1,whitespace);
+}
+if(i<(a.length-1)) output+=(whitespace ? ", " : ",");
+}
+output+="]";
+return output;
+}
+} // end of JSON namespace
+/* json_value objects
+These classes are used to represent the JSON object tree. A tree will be returned upon calling loads, but a tree may also be manually constructed and passed to dumps to format it.
+With any given json_value instance, you must check its type against the enumeration, construct an appropriate intermediate value, and call get, passing your intermediate value.
+You will never directly receive an instance of json_array, instead you will be given the internal array of json_value instances.
+Instances of json_object provide many extra appropriate methods, but your object must be a json_object instance, not a json_value instance, to use these.
+*/
+class json_value
+{
+uint8 type;
+bool get(string &out ret)
+{
+return false;
+}
+bool get(double &out ret)
+{
+return false;
+}
+bool get(bool &out ret)
+{
+return false;
+}
+bool get(json_value@[]@ &out ret)
+{
+return false;
+}
+bool get(json_object &out ret)
+{
+return false;
+}
+bool set(string &in data)
+{
+return false;
+}
+bool set(double data)
+{
+return false;
+}
+bool set(bool data)
+{
+return false;
+}
+bool set(json_value@[] data)
+{
+return false;
+}
+bool set(json_object data)
+{
+return false;
+}
+}
+class json_string : json_value
+{
+private string data;
+json_string()
+{
+this.type=JSON_STRING;
+}
+json_string(string d)
+{
+this.type=JSON_STRING;
+this.data=d;
+}
+bool get(string &out ret)
+{
+ret= this.data;
+return true;
+}
+bool set(string &in data)
+{
+this.data=data;
+return true;
+}
+}
+class json_number : json_value
+{
+private double data;
+json_number()
+{
+this.type=JSON_NUMBER;
+}
+json_number(double d)
+{
+this.type=JSON_NUMBER;
+this.data=d;
+}
+bool get(double &out ret)
+{
+ret=this.data;
+return true;
+}
+bool set(double data)
+{
+this.data=data;
+return true;
+}
+}
+class json_bool : json_value
+{
+private bool data;
+json_bool()
+{
+this.type=JSON_BOOL;
+}
+json_bool(bool d)
+{
+this.type=JSON_BOOL;
+this.data=d;
+}
+bool get(bool &out ret)
+{
+ret=this.data;
+return true;
+}
+bool set(bool data)
+{
+this.data=data;
+return true;
+}
+}
+class json_array : json_value
+{
+json_value@[] data;
+json_array()
+{
+this.type=JSON_ARRAY;
+}
+json_array(json_value@[] d)
+{
+this.type=JSON_ARRAY;
+this.data=d;
+}
+bool get(json_value@[]@ &out ret)
+{
+@ret=this.data;
+return true;
+}
+bool set(json_value@[] data)
+{
+this.data=data;
+return true;
+}
+bool insert(json_value@ value, int index=-1)
+{
+if(index==-1) data.insert_last(value);
+else if(index>data.length) return false;
+else data.insert_at(index,value);
+return true;
+}
+bool remove(uint index)
+{
+if(index>=data.length) return false;
+else data.remove_at(index);
+return true;
+}
+bool set(json_value@ value, uint index)
+{
+if(index>=data.length) return false;
+@data[index]=value;
+return true;
+}
+json_value@ opIndex(uint i)
+{
+if(i>=data.length) return null;
+else return data[i];
+}
+uint length()
+{
+return data.length;
+}
+int index_type(uint index)
+{
+if(index>=data.length) return JSON_INVALID;
+else return data[index].type;
+}
+json_object@ index_obj(uint index)
+{
+json_value@ ret=this.opIndex(index);
+if(@ret==null) return null;
+else return cast<json_object>(ret);
+}
+}
+// internal class used to represent a given member of a json_object. Do not instantiate manually, the object will create these with the set methods.
+class json_object_member
+{
+string name;
+json_value@ value;
+json_object_member(string name, json_value@ value)
+{
+this.name=name;
+@this.value=value;
+}
+bool get(string &out ret)
+{
+if(@this.value!=null and this.value.type==JSON_STRING)
+{
+this.value.get(ret);
+return true;
+}
+else return false;
+}
+bool get(double &out ret)
+{
+if(@this.value!=null and this.value.type==JSON_NUMBER)
+{
+this.value.get(ret);
+return true;
+}
+else return false;
+}
+bool get(bool &out ret)
+{
+if(@this.value!=null and this.value.type==JSON_BOOL)
+{
+this.value.get(ret);
+return true;
+}
+else return false;
+}
+bool get(json_value@[]@ &out ret)
+{
+if(@this.value!=null and this.value.type==JSON_ARRAY)
+{
+this.value.get(ret);
+return true;
+}
+else return false;
+}
+bool get(json_object &out ret)
+{
+if(@this.value!=null and this.value.type==JSON_OBJECT)
+{
+this.value.get(ret);
+return true;
+}
+else return false;
+}
+bool is_null()
+{
+return this.value is null;
+}
+}
+/* json_object
+The object that represents mappings of names to values in JSON.
+Due to limitations of bgt dictionaries, all member lookups occur in linear time. Sets may occur in linear time as well, due to the members list being a dynamic array.
+Methods to get a value operate similarly to those for individual value instances, but now receive a name key. The same is true for set methods.
+You may also pass a raw json_value instance to set to have that value inserted as-is, but due to the convenience methods this shouldn't really be necessary.
+useful methods:
+bool has(string name): True if this object has a member with the given name.
+uint8 type(string name): Returns the type of a given member, or JSON_INVALID if a member with that name does not exist.
+bool get(string name, ? &out value): Gets the value referenced by name and puts it in the intermediate value. Please construct your intermediate value with the proper type before making this call. Incorrect types will result in undefined behavior, but should result in this function returning false.
+json_object@ get_obj(string name): Convenience method to return directly an instance to a nested object referenced by name, otherwise null. This method is the only such which outright returns its value.
+void set(string name, ? value): Sets name to have the value value. If a value by that name already exists, overwrites it. May be any of the supported primatives, json_value@[], json_object, or a raw json_value instance.
+bool unset(string name): Removes the member name. Returns true upon success, or false if such member didn't exist.
+string[] get_members(): Returns a list of member names this object contains.
+*/
+class json_object : json_value
+{
+private json_object_member@[] members;
+json_object()
+{
+this.type=JSON_OBJECT;
+}
+json_object(json_object_member@[] data)
+{
+this.members=data;
+this.type=JSON_OBJECT;
+}
+private int member_index(string name)
+{
+for(uint i=0; i<members.length; i++)
+{
+if(members[i].name==name) return i;
+}
+return -1;
+}
+bool has(string name)
+{
+return this.member_index(name)!=-1;
+}
+uint8 type(string name)
+{
+int index=member_index(name);
+if(index==-1) return JSON_INVALID;
+else if(members[index].is_null()) return JSON_NULL;
+else return members[index].value.type;
+}
+bool get(json_object ret)
+{
+ret=this;
+return true;
+}
+bool get(string name, string &out ret)
+{
+int index=this.member_index(name);
+if(index!=-1) return members[index].get(ret);
+else return false;
+}
+bool get(string name, double &out ret)
+{
+int index=this.member_index(name);
+if(index!=-1) return members[index].get(ret);
+else return false;
+}
+bool get(string name, bool &out ret)
+{
+int index=this.member_index(name);
+if(index!=-1) return members[index].get(ret);
+else return false;
+}
+bool get(string name, json_value@[]@ &out ret)
+{
+int index=this.member_index(name);
+if(index!=-1) return members[index].get(@ret);
+else return false;
+}
+json_object@ get_obj(string name)
+{
+int index=this.member_index(name);
+if(index!=-1) return cast<json_object>(members[index].value);
+else return null;
+}
+void set(string name, json_value@ value)
+{
+json_object_member member1(name,value);
+int index=member_index(name);
+if(index!=-1) members.remove_at(index);
+members.insert_last(member1);
+}
+void set(string name, json_object value)
+{
+json_object_member member1(name,value);
+int index=member_index(name);
+if(index!=-1) members.remove_at(index);
+members.insert_last(member1);
+}
+void set(string name, string value)
+{
+json_string v(value);
+this.set(name,v);
+}
+void set(string name, double value)
+{
+json_number v(value);
+this.set(name,v);
+}
+void set(string name, bool value)
+{
+json_bool v(value);
+this.set(name,v);
+}
+void set(string name, json_value@[] value)
+{
+json_array v(value);
+this.set(name,v);
+}
+string[]@ get_members()
+{
+string[] ret(members.length);
+for(uint i=0; i<members.length; i++)
+{
+ret.insert_last(members[i].name);
+}
+return ret;
+}
+bool unset(string name)
+{
+int index=member_index(name);
+if(index<0) return false;
+members.remove_at(index);
+return true;
+}
+}
