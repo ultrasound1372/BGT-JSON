@@ -780,6 +780,7 @@ string[]@ get_members()
 string[] ret(members.length);
 for(uint i=0; i<members.length; i++)
 {
+if(!members[i].name.is_empty())
 ret.insert_last(members[i].name);
 }
 return ret;
