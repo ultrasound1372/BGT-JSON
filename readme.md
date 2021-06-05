@@ -45,17 +45,17 @@ json_object@ no=JSON::loads(jsondata);
 if(no.type("obj")==JSON_OBJECT)
 {
 json_object@ no2=o.get_obj("obj");
-if(o2.type("bar")==JSON_STRING)
+if(no2.type("bar")==JSON_STRING)
 {
 string bar;
-o2.get("bar", bar);
+no2.get("bar", bar);
 alert("obj.bar",bar);
 }
 }
-if(o.type("arr")==JSON_ARRAY)
+if(no.type("arr")==JSON_ARRAY)
 {
 json_value@[]@ arr;
-o.get("arr", arr);
+no.get("arr", arr);
 if(arr[0].type==JSON_STRING)
 {
 string arr0;
