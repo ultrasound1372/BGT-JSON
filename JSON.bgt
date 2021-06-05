@@ -777,7 +777,7 @@ this.set(name,v);
 }
 string[]@ get_members()
 {
-string[] ret(members.length);
+string[] ret();
 for(uint i=0; i<members.length; i++)
 {
 if(!members[i].name.is_empty())
