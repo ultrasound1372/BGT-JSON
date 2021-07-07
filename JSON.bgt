@@ -276,7 +276,10 @@ cursor=load_json_array(json,cursor,a);
 o.set(name,a);
 }
 cursor=skip_whitespace(json,cursor);
-if(cursor<json.length()&&json[cursor]==",") cursor++;
+if(cursor<json.length())
+{
+if(json[cursor]==",") cursor++;
+}
 }
 return cursor;
 }
@@ -326,7 +329,10 @@ cursor=load_json_array(json,cursor,a1);
 a.insert(a1);
 }
 cursor=skip_whitespace(json,cursor);
-if(cursor<json.length()&&json[cursor]==",") cursor++;
+if(cursor<json.length())
+{
+if(json[cursor]==",") cursor++;
+}
 }
 return cursor;
 }
