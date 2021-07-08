@@ -64,6 +64,7 @@ return true; // the loop completed without finding anything off
 string make_string(const string &in str)
 { // produces a usable string to be put in JSON, including the surrounding quotes, and with escapes applied
 string ret=str;
+ret=string_replace(ret,backslash,backslash+backslash,true);
 ret=string_replace(ret,"\r","\\r",true);
 ret=string_replace(ret,"\n","\\n",true);
 ret=string_replace(ret,"\t","\\t",true);
@@ -79,6 +80,7 @@ ret=string_replace(ret,"\\n","\n",true);
 ret=string_replace(ret,"\\t","\t",true);
 ret=string_replace(ret,"\\/","/",true);
 ret=string_replace(ret,equote,quote,true);
+ret=string_replace(ret("\\\\",backslash,true);
 cursor=endquote+1;
 if(cursor>=json.length()) cursor=json.length(); // don't get an index out of bounds error here.
 return ret;
