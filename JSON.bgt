@@ -80,7 +80,7 @@ ret=string_replace(ret,"\\n","\n",true);
 ret=string_replace(ret,"\\t","\t",true);
 ret=string_replace(ret,"\\/","/",true);
 ret=string_replace(ret,equote,quote,true);
-ret=string_replace(ret("\\\\",backslash,true);
+ret=string_replace(ret,"\\\\",backslash,true);
 cursor=endquote+1;
 if(cursor>=json.length()) cursor=json.length(); // don't get an index out of bounds error here.
 return ret;
