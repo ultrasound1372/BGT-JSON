@@ -64,7 +64,7 @@ return true; // the loop completed without finding anything off
 string make_string(const string &in str)
 { // produces a usable string to be put in JSON, including the surrounding quotes, and with escapes applied
 string ret=str;
-ret=string_replace(ret,backslash,backslash+backslash,true);
+ret=string_replace(ret,"\\","\\\\",true);
 ret=string_replace(ret,"\r","\\r",true);
 ret=string_replace(ret,"\n","\\n",true);
 ret=string_replace(ret,"\t","\\t",true);
@@ -90,10 +90,19 @@ string get_string(const string &in json, uint startquote, uint &out cursor)
 int endquote=-1;
 for(uint i=startquote+1; i<json.length(); i++)
 {
-if(json[i]==quote and json[i-1]!=backslash)
+if(json[i]==quote)
+{
+int backslashes=0;
+for(int j=i-1; j>=0; j--)
+{
+if(json[j]==backslash) backslashes++;
+else break;
+}
+if(backslashes%2==0)
 {
 endquote=i;
 break;
+}
 }
 else continue;
 }
@@ -278,10 +287,11 @@ cursor=load_json_array(json,cursor,a);
 o.set(name,a);
 }
 cursor=skip_whitespace(json,cursor);
-if(cursor<json.length())
+if(cursor<json.length()&&cursor>-1)
 {
 if(json[cursor]==",") cursor++;
 }
+if(cursor==-1) return -1;
 }
 return cursor;
 }
